@@ -30,42 +30,42 @@ __global__ void forward_kernel(float *y, const float *x, const float *k,
 							   const int W_grid, const int H_out, const int W_out)
 {
 
-	#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-	#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-	#define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+		#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
+		#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+		#define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
-    /*
-    Modify this function to implement the forward pass described in Chapter 16.
-    We have added an additional dimension to the tensors to support an entire mini-batch
-    The goal here is to be correct AND fast.
-    We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
-    */
+			/*
+			Modify this function to implement the forward pass described in Chapter 16.
+			We have added an additional dimension to the tensors to support an entire mini-batch
+			The goal here is to be correct AND fast.
+			We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
+			*/
 
-	const int b = blockIdx.x;
-	const int m = blockIdx.y;
-	const int h = (blockIdx.z/W_grid)*TILE_WIDTH+threadIdx.y;
-	const int w = (blockIdx.z%W_grid)*TILE_WIDTH+threadIdx.x;
-	if (h >= H_out || w >= W_out) {
-		return;
-	}
-	float acc = 0;
-	for (int c = 0; c < C; ++c) { // Sum over all input channels
-		for (int p = 0; p < K; ++p) {	// Loop over filter
-			for (int q = 0; q < K; ++q) {
-				acc += x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
+		const int b = blockIdx.x;
+		const int m = blockIdx.y;
+		const int h = (blockIdx.z/W_grid)*TILE_WIDTH+threadIdx.y;
+		const int w = (blockIdx.z%W_grid)*TILE_WIDTH+threadIdx.x;
+		if (h >= H_out || w >= W_out) {
+			return;
+		}
+		float acc = 0;
+		for (int c = 0; c < C; ++c) { // Sum over all input channels
+			for (int p = 0; p < K; ++p) {	// Loop over filter
+				for (int q = 0; q < K; ++q) {
+					acc += x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
+				}
 			}
 		}
-	}
-	y4d(b,m,h,w) = acc;
+		y4d(b,m,h,w) = acc;
 
-	// An example use of these macros:
-	// float a = y4d(0,0,0,0)
-	// y4d(0,0,0,0) = a
-		
+		// An example use of these macros:
+		// float a = y4d(0,0,0,0)
+		// y4d(0,0,0,0) = a
+			
 
-	#undef y4d
-	#undef x4d
-	#undef k4d
+		#undef y4d
+		#undef x4d
+		#undef k4d
 }
 
 /* 
@@ -78,17 +78,17 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 {
 
     // Extract the tensor dimensions into B,M,C,H,W,K
-	const int B = x.shape_[0]; // Batch Size
-	const int M = y.shape_[1]; // Output Feature Map Size
-	const int C = x.shape_[1]; // Input Feature Map Size
-	const int H = x.shape_[2]; // Height of Image
-	const int W = x.shape_[3]; // Width of Image
-	const int K = w.shape_[3]; // Filter Size
-	const int H_out = H-K+1; // Output Height
-	const int W_out = W-K+1; // Output Width
-	const int W_grid = ceil(W_out / (float)TILE_WIDTH); // Number of horizontal tiles per output map
-	const int H_grid = ceil(H_out / (float)TILE_WIDTH); // Number of vertical tiles per output map
-	const int Z = H_grid*W_grid;
+		const int B = x.shape_[0]; // Batch Size
+		const int M = y.shape_[1]; // Output Feature Map Size
+		const int C = x.shape_[1]; // Input Feature Map Size
+		const int H = x.shape_[2]; // Height of Image
+		const int W = x.shape_[3]; // Width of Image
+		const int K = w.shape_[3]; // Filter Size
+		const int H_out = H-K+1; // Output Height
+		const int W_out = W-K+1; // Output Width
+		const int W_grid = ceil(W_out / (float)TILE_WIDTH); // Number of horizontal tiles per output map
+		const int H_grid = ceil(H_out / (float)TILE_WIDTH); // Number of vertical tiles per output map
+		const int Z = H_grid*W_grid;
     // Set the kernel dimensions
     dim3 gridDim(B,M,Z);
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
