@@ -99,7 +99,7 @@ namespace mxnet
 
 			// Initialize constant memory allocations
 			int kernelSize = M * C * K * K * sizeof(float);
-  			int offset = 0;
+  		int offset = 0;
 			cudaMemcpyToSymbol(convo_kernel, w.dptr_, kernelSize, offset, cudaMemcpyHostToDevice);
 
 			// Set the kernel dimensions
