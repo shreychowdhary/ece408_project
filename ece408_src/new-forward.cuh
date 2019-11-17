@@ -8,7 +8,8 @@ namespace mxnet
    	namespace op
 	{
 
-		#define TILE_WIDTH 32
+		#define IN_TILE_WIDTH 32
+		#define OUT_TILE_WIDTH 28
 
 		#define MAX_M_SIZE 24
 		#define MAX_C_SIZE 12
@@ -47,29 +48,37 @@ namespace mxnet
 			The goal here is to be correct AND fast.
 			We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
 			*/
-
+			const int tx = threadIdx.x;
+			const int ty = threadIdx.y;
 			const int b = blockIdx.x;
 			const int m = blockIdx.y;
-			const int h = (blockIdx.z / W_grid) * TILE_WIDTH + threadIdx.y;
-			const int w = (blockIdx.z % W_grid) * TILE_WIDTH + threadIdx.x;
-			if (h >= H_out || w >= W_out) {
+			const int h = (blockIdx.z / W_grid) * OUT_TILE_WIDTH + ty;
+			const int w = (blockIdx.z % W_grid) * OUT_TILE_WIDTH + tx;
+	
+			__shared__ float xs[MAX_C_SIZE][IN_TILE_WIDTH][IN_TILE_WIDTH];
+
+			for (int c = 0; c < C; ++c) {
+				if (h >= 0 && h < H && w >= 0 && w < W) {
+					xs[c][ty][tx] = x4d(b,c,h,w);
+				} else {
+					xs[c][ty][tx] = 0.0;
+				}
+			}
+			__syncthreads();
+
+			if (ty >= OUT_TILE_WIDTH || tx >= OUT_TILE_WIDTH || h >= H_out || w >= W_out) {
 				return;
 			}
-			float acc = 0;
+
+			float acc = 0.0;
 			for (int c = 0; c < C; ++c) { // Sum over all input channels
 				for (int p = 0; p < K; ++p) {	// Loop over filter
 					for (int q = 0; q < K; ++q) {
-						acc += x4d(b, c, h + p, w + q) * k4d(m, c, p, q);
+						acc += xs[c][ty+p][tx+q] * k4d(m, c, p, q);
 					}
 				}
 			}
 			y4d(b, m, h, w) = acc;
-
-			// An example use of these macros:
-			// float a = y4d(0,0,0,0)
-			// y4d(0,0,0,0) = a
-				
-
 			#undef y4d
 			#undef x4d
 			#undef k4d
@@ -93,8 +102,8 @@ namespace mxnet
 			const int K = w.shape_[3]; // Filter Size
 			const int H_out = H - K + 1; // Output Height
 			const int W_out = W - K + 1; // Output Width
-			const int W_grid = ceil(W_out / (float)TILE_WIDTH); // Number of horizontal tiles per output map
-			const int H_grid = ceil(H_out / (float)TILE_WIDTH); // Number of vertical tiles per output map
+			const int W_grid = ceil(W_out / (float)OUT_TILE_WIDTH); // Number of horizontal tiles per output map
+			const int H_grid = ceil(H_out / (float)OUT_TILE_WIDTH); // Number of vertical tiles per output map
 			const int Z = H_grid * W_grid;
 
 			// Initialize constant memory allocations
@@ -104,7 +113,7 @@ namespace mxnet
 
 			// Set the kernel dimensions
 			dim3 gridDim(B, M, Z);
-			dim3 blockDim(TILE_WIDTH,TILE_WIDTH, 1);
+			dim3 blockDim(IN_TILE_WIDTH,IN_TILE_WIDTH, 1);
 
 			// Call the kernel
 			forward_kernel<<<gridDim, blockDim>>>(y.dptr_, x.dptr_, w.dptr_, M, C, H, W, K, W_grid, H_out, W_out);
