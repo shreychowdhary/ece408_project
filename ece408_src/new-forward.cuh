@@ -33,7 +33,7 @@ namespace mxnet
 		 *  H_out		- Output Height
 		 *  W_out		- Output Width
 		 */
-		__global__ void forward_kernel(float *y, const float *x, const float *k, 
+		__global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, 
 									const int M, const int C, const int H, const int W, const int K, 
 									const int W_grid, const int H_out, const int W_out)
 		{
@@ -71,8 +71,11 @@ namespace mxnet
 			}
 
 			float acc = 0.0;
+            #pragma unroll
 			for (int c = 0; c < C; ++c) { // Sum over all input channels
+                #pragma unroll
 				for (int p = 0; p < K; ++p) {	// Loop over filter
+                    #pragma unroll
 					for (int q = 0; q < K; ++q) {
 						acc += xs[c][ty+p][tx+q] * k4d(m, c, p, q);
 					}
