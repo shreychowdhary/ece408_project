@@ -10,9 +10,7 @@ namespace mxnet
 
 		#define ONE_IN_TILE_WIDTH 32
 		#define ONE_OUT_TILE_WIDTH 28
-		#define MUL_IN_TILE_WIDTH 32
-		#define MUL_OUT_TILE_WIDTH 28
-		#define MUL_C_TILE_WIDTH 1
+		#define MUL_TILE_WIDTH 32
 
 		#define MAX_M_SIZE 24
 		#define MAX_C_SIZE 12
@@ -68,9 +66,9 @@ namespace mxnet
 			}
 
 			float acc = 0.0;
-			#pragma unroll
+			#pragma unroll 5
 			for (int p = 0; p < K; ++p) {	// Loop over filter
-				#pragma unroll
+				#pragma unroll 5
 				for (int q = 0; q < K; ++q) {
 					acc += xs[ty+p][tx+q] * k4d(m, 0, p, q);
 				}
@@ -142,14 +140,17 @@ namespace mxnet
 			y4d(b, m, h, w) = acc;*/
 			const int b = blockIdx.x;
 			const int m = blockIdx.y;
-			const int h = (blockIdx.z/W_grid)*MUL_IN_TILE_WIDTH+threadIdx.y;
-			const int w = (blockIdx.z%W_grid)*MUL_IN_TILE_WIDTH+threadIdx.x;
+			const int h = (blockIdx.z/W_grid)*MUL_TILE_WIDTH+threadIdx.y;
+			const int w = (blockIdx.z%W_grid)*MUL_TILE_WIDTH+threadIdx.x;
 			if (h >= H_out || w >= W_out) {
 				return;
 			}
 			float acc = 0;
+			#pragma unroll 12
 			for (int c = 0; c < C; ++c) { // Sum over all input channels
+				#pragma unroll 5
 				for (int p = 0; p < K; ++p) {	// Loop over filter
+					#pragma unroll 5
 					for (int q = 0; q < K; ++q) {
 						acc += x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
 					}
@@ -184,12 +185,14 @@ namespace mxnet
 			int kernelSize = M * C * K * K * sizeof(float);
   		int offset = 0;
 			cudaMemcpyToSymbol(convo_kernel, w.dptr_, kernelSize, offset, cudaMemcpyHostToDevice);
+
+			
 			if (C > 1) {
-				const int W_grid = ceil(W_out / (float)MUL_IN_TILE_WIDTH); // Number of horizontal tiles per output map
-				const int H_grid = ceil(H_out / (float)MUL_IN_TILE_WIDTH); // Number of vertical tiles per output map
+				const int W_grid = ceil(W_out / (float)MUL_TILE_WIDTH); // Number of horizontal tiles per output map
+				const int H_grid = ceil(H_out / (float)MUL_TILE_WIDTH); // Number of vertical tiles per output map
 				const int Z = H_grid * W_grid;
 				dim3 gridDim(B, M, Z);
-				dim3 blockDim(MUL_IN_TILE_WIDTH,MUL_IN_TILE_WIDTH, MUL_C_TILE_WIDTH);
+				dim3 blockDim(MUL_TILE_WIDTH,MUL_TILE_WIDTH, 1);
 
 				mul_forward_kernel<<<gridDim, blockDim>>>(y.dptr_, x.dptr_, w.dptr_, M, C, H, W, K, H_grid, W_grid, H_out, W_out);
 			} else {
@@ -204,17 +207,6 @@ namespace mxnet
 			// Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
 			MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 
-			// printf("B = %d\n", B); // Batch Size
-			// printf("M = %d\n", M);
-			// printf("C = %d\n", C);
-			// printf("H = %d\n", H);
-			// printf("W = %d\n", W);
-			// printf("K = %d\n", K);
-			// printf("H_out = %d\n", H_out);
-			// printf("W_out = %d\n", W_out);
-			// printf("W_grid = %d\n", W_grid);
-			// printf("H_grid = %d\n", H_grid);
-			// printf("Z = %d\n", Z);
 		}
 
 		/* 
