@@ -10,7 +10,8 @@ namespace mxnet
 
 		#define ONE_IN_TILE_WIDTH 32
 		#define ONE_OUT_TILE_WIDTH 28
-		#define MUL_TILE_WIDTH 32
+		#define MUL_IN_TILE_WIDTH 32
+		#define MUL_OUT_TILE_WIDTH 28
 
 		#define MAX_M_SIZE 24
 		#define MAX_C_SIZE 12
@@ -102,64 +103,43 @@ namespace mxnet
 			#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 			#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 			#define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-			/*const int tx = threadIdx.x;
-			const int ty = threadIdx.y;
-			const int tz = threadIdx.z;
+
 			const int b = blockIdx.x;
 			const int m = blockIdx.y;
-			const int h = (blockIdx.z / W_grid) * MUL_OUT_TILE_WIDTH + ty;
-			const int w = (blockIdx.z % W_grid) * MUL_OUT_TILE_WIDTH + tx;
-	
-			__shared__ float xs[MAX_C_SIZE][MUL_IN_TILE_WIDTH][MUL_IN_TILE_WIDTH];
-
-			for (int c_grid = 0; c_grid < C/MUL_C_TILE_WIDTH; ++c_grid) {
-				int c = c_grid*MUL_C_TILE_WIDTH+tz;
-				if (h >= 0 && h < H && w >= 0 && w < W) {
-					xs[c][ty][tx] = x4d(b,c,h,w);
-				} else {
-					xs[c][ty][tx] = 0.0;
-				}
-			}
-			__syncthreads();
-
-			if (ty >= MUL_OUT_TILE_WIDTH || tx >= MUL_OUT_TILE_WIDTH || h >= H_out || w >= W_out|| tz > 0) {
-				return;
-			}
-
-			float acc = 0.0;
-      #pragma unroll
-			for (int c = 0; c < C; ++c) { // Sum over all input channels
-        #pragma unroll
-				for (int p = 0; p < K; ++p) {	// Loop over filter
-          #pragma unroll
-					for (int q = 0; q < K; ++q) {
-						acc += xs[c][ty+p][tx+q] * k4d(m, c, p, q);
-					}
-				}
-			}
-			y4d(b, m, h, w) = acc;*/
-			const int b = blockIdx.x;
-			const int m = blockIdx.y;
-			const int h = (blockIdx.z/W_grid)*MUL_TILE_WIDTH+threadIdx.y;
-			const int w = (blockIdx.z%W_grid)*MUL_TILE_WIDTH+threadIdx.x;
-			if (h >= H_out || w >= W_out) {
-				return;
-			}
-			float acc = 0;
-			#pragma unroll 12
-			for (int c = 0; c < C; ++c) { // Sum over all input channels
-				#pragma unroll 5
-				for (int p = 0; p < K; ++p) {	// Loop over filter
-					#pragma unroll 5
-					for (int q = 0; q < K; ++q) {
-						acc += x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
-					}
-				}
-			}
-			y4d(b,m,h,w) = acc;
+			const int h = (blockIdx.z/W_grid)*MUL_IN_TILE_WIDTH+threadIdx.y;
+			const int w = (blockIdx.z%W_grid)*MUL_IN_TILE_WIDTH+threadIdx.x;
 			#undef y4d
 			#undef x4d
 			#undef k4d
+		}
+
+		__global__ void mul_unroll_kernel(float* x_unroll, float * __restrict__ x,	
+				const int M, const int C, const int H, const int W, const int K,
+				const int H_grid, const int W_grid, const int H_out, const int W_out) {
+			#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+			#define x_unroll4d(i3, i2, i1, i0) x_unroll[(i3) * (C * K * K * H_out * W_out) + (i2) * (K * K * H_out * W_out) + (i1) * (H_out * W_out) + i0]
+			__shared__ float shared [MUL_IN_TILE_WIDTH][MUL_IN_TILE_WIDTH];
+
+			const int b = blockIdx.x;
+			const int c = blockIdx.y;
+			const int h = (blockIdx.z/W_grid)*MUL_IN_TILE_WIDTH+threadIdx.y;
+			const int w = (blockIdx.z%W_grid)*MUL_IN_TILE_WIDTH+threadIdx.x;
+			const int ty = threadIdx.y;
+			const int tx = threadIdx.x;
+			
+			if (h < H && w < W) {
+				shared[ty][tx] = x4d(b,c,h,w);
+			}
+			__syncthreads();
+			if (ty < MUL_IN_TILE_WIDTH && tx < MUL_IN_TILE_WIDTH && h < H_out && w < W_out) {
+				for (int p = 0; p < K; p++) {
+					for (int q = 0; q < K; q++) {
+						x_unroll4d(b,c,p*K+q,h*W_out+w) = shared[ty+p][tx+q]; 
+					}
+				}
+			}
+			#undef x4d
+			#undef x_unroll4d
 		}
 
 		/* 
@@ -188,13 +168,15 @@ namespace mxnet
 
 			
 			if (C > 1) {
-				const int W_grid = ceil(W_out / (float)MUL_TILE_WIDTH); // Number of horizontal tiles per output map
-				const int H_grid = ceil(H_out / (float)MUL_TILE_WIDTH); // Number of vertical tiles per output map
+				float* x_unroll = (float*)cudaMalloc((void**)&x_unroll,B*C*K*K*H_out*W_out*sizeof(float));
+				const int W_grid = ceil(W_out / (float)MUL_OUT_TILE_WIDTH); // Number of horizontal tiles per output map
+				const int H_grid = ceil(H_out / (float)MUL_OUT_TILE_WIDTH); // Number of vertical tiles per output map
 				const int Z = H_grid * W_grid;
-				dim3 gridDim(B, M, Z);
-				dim3 blockDim(MUL_TILE_WIDTH,MUL_TILE_WIDTH, 1);
-
-				mul_forward_kernel<<<gridDim, blockDim>>>(y.dptr_, x.dptr_, w.dptr_, M, C, H, W, K, H_grid, W_grid, H_out, W_out);
+				dim3 unrollGridDim (B,C,Z);
+				dim3 unrollBlockDim (MUL_IN_TILE_WIDTH,MUL_IN_TILE_WIDTH,1);
+				mul_unroll_kernel <<<unrollGridDim,unrollBlockDim,MUL_IN_TILE_WIDTH*MUL_IN_TILE_WIDTH*sizeof(float)>>>(x_unroll,x.dptr_,M,C,H,W,K,H_grid,W_grid,H_out,W_out);
+				//ADD matrix mul from here
+				
 			} else {
 				const int W_grid = ceil(W_out / (float)ONE_OUT_TILE_WIDTH); // Number of horizontal tiles per output map
 				const int H_grid = ceil(H_out / (float)ONE_OUT_TILE_WIDTH); // Number of vertical tiles per output map
