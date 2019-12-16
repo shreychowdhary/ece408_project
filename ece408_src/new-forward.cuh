@@ -20,9 +20,6 @@ namespace mxnet
 		#define MAX_C_SIZE 12
 		#define MAX_K_SIZE 5
 
-		// Constant memory variable for convolutional kernel. 
-		__constant__ float convo_kernel[MAX_M_SIZE * MAX_C_SIZE * MAX_K_SIZE * MAX_K_SIZE];
-
 		// use when C = 1
 
 
@@ -54,7 +51,7 @@ namespace mxnet
             int T = ceil(1.0 * C * K * K / MUL_IN_TILE_WIDTH1);
             for (int t = 0; t < T; t++) {
                 if (tx + t*MUL_IN_TILE_WIDTH1 < filter_area * C) {
-                    tileK[ty][tx] = convo_kernel[row*filter_area*C + (tx + t*MUL_IN_TILE_WIDTH1)];
+                    tileK[ty][tx] = k[row*filter_area*C + (tx + t*MUL_IN_TILE_WIDTH1)];
                 } else {
                     tileK[ty][tx] = 0;
                 }
@@ -117,7 +114,7 @@ namespace mxnet
             int T = ceil(1.0 * C * K * K / MUL_IN_TILE_WIDTH2);
             for (int t = 0; t < T; t++) {
                 if (tx + t*MUL_IN_TILE_WIDTH2 < filter_area * C) {
-                    tileK[ty][tx] = convo_kernel[row*filter_area*C + (tx + t*MUL_IN_TILE_WIDTH2)];
+                    tileK[ty][tx] = k[row*filter_area*C + (tx + t*MUL_IN_TILE_WIDTH2)];
                 } else {
                     tileK[ty][tx] = 0;
                 }
@@ -174,12 +171,6 @@ namespace mxnet
             // printf("  K = %d\n", K);
             // printf("  H_out = %d\n", H_out);
             // printf("  W_out = %d\n", W_out);
-
-			// Initialize constant memory allocations
-			int kernelSize = M * C * K * K * sizeof(float);
-  		int offset = 0;
-			cudaMemcpyToSymbol(convo_kernel, w.dptr_, kernelSize, offset, cudaMemcpyHostToDevice);
-
 			
 			if (C > 1) {
                 dim3 gridDim(ceil(1.0 * H_out * W_out / MUL_IN_TILE_WIDTH2), ceil(1.0 * M / MUL_IN_TILE_HEIGHT2), B);
