@@ -10,8 +10,13 @@ namespace mxnet
 
 		#define ONE_IN_TILE_WIDTH 32
 		#define ONE_OUT_TILE_WIDTH 28
-		#define MUL_IN_TILE_WIDTH 32
-		#define MUL_OUT_TILE_WIDTH 28
+		// #define MUL_IN_TILE_WIDTH 32
+		// #define MUL_OUT_TILE_WIDTH 28
+		#define MUL_IN_TILE_WIDTH1 32
+		#define MUL_IN_TILE_HEIGHT1 6
+		#define MUL_IN_TILE_WIDTH2 32
+		#define MUL_IN_TILE_HEIGHT2 16
+        
 
 		#define MAX_M_SIZE 24
 		#define MAX_C_SIZE 12
@@ -20,126 +25,131 @@ namespace mxnet
 		// Constant memory variable for convolutional kernel. 
 		__constant__ float convo_kernel[MAX_M_SIZE * MAX_C_SIZE * MAX_K_SIZE * MAX_K_SIZE];
 
-		/**
-		 * Performs forward convolutional kenel.
-		 * Params:
-		 * 	float *y	- Output array
-		 *  float *x 	- Input array
-		 *  float *k	- Convolutional kernel
-		 *  int M		- Number of output feature maps
-		 *  int C		- Number of input feature maps
-		 * 	int H		- Width of Image
-		 *  int W		- Height of Image
-		 * 	int K		- Filter Size
-		 *  H_grid  - Number of vertical tiles per output map
-		 *  W_grid 	- Number of horizontal tiles per output map
-		 *  H_out		- Output Height
-		 *  W_out		- Output Width
-		 */
 		// use when C = 1
-		__global__ void one_forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, 
-									const int M, const int C, const int H, const int W, const int K,
-									const int H_grid, const int W_grid, const int H_out, const int W_out)
-		{
-
-			#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-			#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-			#define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-			const int tx = threadIdx.x;
-			const int ty = threadIdx.y;
-			const int b = blockIdx.x;
-			const int m = blockIdx.y;
-			const int h = (blockIdx.z / W_grid) * ONE_OUT_TILE_WIDTH + ty;
-			const int w = (blockIdx.z % W_grid) * ONE_OUT_TILE_WIDTH + tx;
-	
-			__shared__ float xs[ONE_IN_TILE_WIDTH][ONE_IN_TILE_WIDTH];
-
-			if (h >= 0 && h < H && w >= 0 && w < W) {
-				xs[ty][tx] = x4d(b,0,h,w);
-			} else {
-				xs[ty][tx] = 0.0;
-			}
-			
-			__syncthreads();
-
-			if (ty >= ONE_OUT_TILE_WIDTH || tx >= ONE_OUT_TILE_WIDTH || h >= H_out || w >= W_out) {
-				return;
-			}
-
-			float acc = 0.0;
-			#pragma unroll 5
-			for (int p = 0; p < K; ++p) {	// Loop over filter
-				#pragma unroll 5
-				for (int q = 0; q < K; ++q) {
-					acc += xs[ty+p][tx+q] * k4d(m, 0, p, q);
-				}
-			}
-			y4d(b, m, h, w) = acc;
-			#undef y4d
-			#undef x4d
-			#undef k4d
-		}
-		/**
-		 * Performs forward convolutional kenel.
-		 * Params:
-		 * 	float *y	- Output array
-		 *  float *x 	- Input array
-		 *  float *k	- Convolutional kernel
-		 *  int M		- Number of output feature maps
-		 *  int C		- Number of input feature maps
-		 * 	int H		- Width of Image
-		 *  int W		- Height of Image
-		 * 	int K		- Filter Size
-		 *  H_grid  - Number of vertical tiles per output map
-		 *  W_grid 	- Number of horizontal tiles per output map
-		 *  H_out		- Output Height
-		 *  W_out		- Output Width
-		 */
-		// use when C > 1
-		__global__ void mul_forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, 
-									const int M, const int C, const int H, const int W, const int K,
-									const int H_grid, const int W_grid, const int H_out, const int W_out)
+		__global__ void mul_forward_kernel_one(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, 
+									const int M, const int C, const int H, const int W, const int K, const int H_out, const int W_out)
 		{
 			#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 			#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 			#define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
-			const int b = blockIdx.x;
-			const int m = blockIdx.y;
-			const int h = (blockIdx.z/W_grid)*MUL_IN_TILE_WIDTH+threadIdx.y;
-			const int w = (blockIdx.z%W_grid)*MUL_IN_TILE_WIDTH+threadIdx.x;
+            __shared__ float tileK[MUL_IN_TILE_HEIGHT1][MUL_IN_TILE_WIDTH1];
+            __shared__ float tileX[MUL_IN_TILE_WIDTH1][MUL_IN_TILE_WIDTH1];
+
+
+            const int row = blockIdx.y * blockDim.y + threadIdx.y;
+            const int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+            const int h_in = col / H_out;
+            const int w_in = col % H_out;
+
+            const int b = /* batch? */ blockIdx.z;
+
+            float acc = 0;
+
+            const int tx = threadIdx.x;
+            const int ty = threadIdx.y;
+            const int filter_area = K * K;
+            const int out_area = H_out * W_out;
+            
+            if (tx < filter_area) {
+                // tileK[ty][tx] = k[row*filter_area + tx];
+                tileK[ty][tx] = convo_kernel[row*filter_area + tx];              
+            } else {
+                tileK[ty][tx] = 0;
+            }
+
+            // unrolled x tile
+#pragma unroll
+            for (int r = 0; r < (MUL_IN_TILE_WIDTH1 / MUL_IN_TILE_HEIGHT1); r++) {
+                int rx = r * MUL_IN_TILE_HEIGHT1 + ty;
+                if (rx < MUL_IN_TILE_WIDTH1) {
+                    int k_lin = rx % filter_area;
+                    if (rx < filter_area && col < out_area) {
+                        tileX[rx][tx] = x4d(b, rx / filter_area, h_in + k_lin/K, w_in + k_lin%K);
+                    } else {
+                        tileX[rx][tx] = 0;
+                    }
+                }
+            }
+            __syncthreads();
+
+            #pragma unroll
+            for (int ti = 0; ti < MUL_IN_TILE_WIDTH1; ti++) {
+                acc += tileK[ty][ti] * tileX[ti][tx];
+            }
+
+            if (col < out_area) {
+                y4d(b, row, 0, col) = acc;
+            }
+            
 			#undef y4d
 			#undef x4d
 			#undef k4d
 		}
 
-		__global__ void mul_unroll_kernel(float* x_unroll, float * __restrict__ x,	
-				const int M, const int C, const int H, const int W, const int K,
-				const int H_grid, const int W_grid, const int H_out, const int W_out) {
-			#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-			#define x_unroll4d(i3, i2, i1, i0) x_unroll[(i3) * (C * K * K * H_out * W_out) + (i2) * (K * K * H_out * W_out) + (i1) * (H_out * W_out) + i0]
-			__shared__ float shared [MUL_IN_TILE_WIDTH][MUL_IN_TILE_WIDTH];
+        __global__ void mul_forward_kernel_two(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, 
+                                               const int M, const int C, const int H, const int W, const int K,
+                                               const int H_out, const int W_out)
+		{
+#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
+#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+#define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
-			const int b = blockIdx.x;
-			const int c = blockIdx.y;
-			const int h = (blockIdx.z/W_grid)*MUL_IN_TILE_WIDTH+threadIdx.y;
-			const int w = (blockIdx.z%W_grid)*MUL_IN_TILE_WIDTH+threadIdx.x;
-			const int ty = threadIdx.y;
-			const int tx = threadIdx.x;
-			
-			if (h < H && w < W) {
-				shared[ty][tx] = x4d(b,c,h,w);
-			}
-			__syncthreads();
-			if (ty < MUL_IN_TILE_WIDTH && tx < MUL_IN_TILE_WIDTH && h < H_out && w < W_out) {
-				for (int p = 0; p < K; p++) {
-					for (int q = 0; q < K; q++) {
-						x_unroll4d(b,c,p*K+q,h*W_out+w) = shared[ty+p][tx+q]; 
-					}
-				}
-			}
-			#undef x4d
-			#undef x_unroll4d
+            __shared__ float tileK[MUL_IN_TILE_HEIGHT2][MUL_IN_TILE_WIDTH2];
+            __shared__ float tileX[MUL_IN_TILE_WIDTH2][MUL_IN_TILE_WIDTH2];
+
+
+            const int row = blockIdx.y * blockDim.y + threadIdx.y;
+            const int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+            const int h_in = col / H_out;
+            const int w_in = col % H_out;
+
+            const int b = /* batch? */ blockIdx.z;
+
+            float acc = 0;
+
+            const int tx = threadIdx.x;
+            const int ty = threadIdx.y;
+            const int filter_area = K * K;
+            const int out_area = H_out * W_out;
+
+            for (int t = 0; t < C; t++) {
+                if (tx + t*MUL_IN_TILE_WIDTH2 < filter_area * C) {
+                    tileK[ty][tx] = convo_kernel[row*filter_area*C + (tx + t*MUL_IN_TILE_WIDTH2)];
+                } else {
+                    tileK[ty][tx] = 0;
+                }
+
+                // unrolled x tile
+#pragma unroll
+                for (int r = 0; r < (MUL_IN_TILE_WIDTH2 / MUL_IN_TILE_HEIGHT2); r++) {
+                    int rx = t * MUL_IN_TILE_WIDTH2 + r * MUL_IN_TILE_HEIGHT2 + ty;
+                    int k_lin = rx % filter_area;
+                    if (rx < filter_area*C && col < out_area) {
+                        tileX[r * MUL_IN_TILE_HEIGHT2 + ty][tx] = x4d(b, rx / filter_area, h_in + k_lin/K, w_in + k_lin%K);
+                    } else {
+                        tileX[r * MUL_IN_TILE_HEIGHT2 + ty][tx] = 0;
+                    }
+                }
+
+                #pragma unroll
+                for (int ti = 0; ti < MUL_IN_TILE_WIDTH2; ti++) {
+                    acc += tileK[ty][ti] * tileX[ti][tx];
+                }
+                __syncthreads();
+            }
+
+
+
+            if (col < out_area) {
+                y4d(b, row, 0, col) = acc;
+            }
+            
+#undef y4d
+#undef x4d
+#undef k4d
 		}
 
 		/* 
@@ -160,6 +170,14 @@ namespace mxnet
 			const int K = w.shape_[3]; // Filter Size
 			const int H_out = H - K + 1; // Output Height
 			const int W_out = W - K + 1; // Output Width
+            // printf("  B = %d\n", B);
+            // printf("  M = %d\n", M);
+            // printf("  C = %d\n", C);
+            // printf("  H = %d\n", H);
+            // printf("  W = %d\n", W);
+            // printf("  K = %d\n", K);
+            // printf("  H_out = %d\n", H_out);
+            // printf("  W_out = %d\n", W_out);
 
 			// Initialize constant memory allocations
 			int kernelSize = M * C * K * K * sizeof(float);
@@ -168,23 +186,14 @@ namespace mxnet
 
 			
 			if (C > 1) {
-				float* x_unroll = (float*)cudaMalloc((void**)&x_unroll,B*C*K*K*H_out*W_out*sizeof(float));
-				const int W_grid = ceil(W_out / (float)MUL_OUT_TILE_WIDTH); // Number of horizontal tiles per output map
-				const int H_grid = ceil(H_out / (float)MUL_OUT_TILE_WIDTH); // Number of vertical tiles per output map
-				const int Z = H_grid * W_grid;
-				dim3 unrollGridDim (B,C,Z);
-				dim3 unrollBlockDim (MUL_IN_TILE_WIDTH,MUL_IN_TILE_WIDTH,1);
-				mul_unroll_kernel <<<unrollGridDim,unrollBlockDim,MUL_IN_TILE_WIDTH*MUL_IN_TILE_WIDTH*sizeof(float)>>>(x_unroll,x.dptr_,M,C,H,W,K,H_grid,W_grid,H_out,W_out);
-				//ADD matrix mul from here
+                dim3 gridDim(ceil(1.0 * H_out * W_out / MUL_IN_TILE_WIDTH2), ceil(1.0 * M / MUL_IN_TILE_HEIGHT2), B);
+                dim3 blockDim(MUL_IN_TILE_WIDTH2, MUL_IN_TILE_HEIGHT2);
+				mul_forward_kernel_two<<<gridDim, blockDim>>>(y.dptr_, x.dptr_, w.dptr_, M, C, H, W, K, H_out, W_out);
 				
 			} else {
-				const int W_grid = ceil(W_out / (float)ONE_OUT_TILE_WIDTH); // Number of horizontal tiles per output map
-				const int H_grid = ceil(H_out / (float)ONE_OUT_TILE_WIDTH); // Number of vertical tiles per output map
-				const int Z = H_grid * W_grid;
-				dim3 gridDim(B, M, Z);
-				dim3 blockDim(ONE_IN_TILE_WIDTH,ONE_IN_TILE_WIDTH, 1);
-
-				one_forward_kernel<<<gridDim, blockDim>>>(y.dptr_, x.dptr_, w.dptr_, M, C, H, W, K, H_grid, W_grid, H_out, W_out);
+                dim3 gridDim(ceil(1.0 * H_out * W_out / MUL_IN_TILE_WIDTH1), ceil(1.0 * M / MUL_IN_TILE_HEIGHT1), B);
+                dim3 blockDim(MUL_IN_TILE_WIDTH1, MUL_IN_TILE_HEIGHT1);
+				mul_forward_kernel_one<<<gridDim, blockDim>>>(y.dptr_, x.dptr_, w.dptr_, M, C, H, W, K, H_out, W_out);
 			}
 			// Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
 			MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
