@@ -49,7 +49,9 @@ namespace mxnet
             const int filter_area = K * K;
             const int out_area = H_out * W_out;
             int T = ceil(1.0 * C * K * K / MUL_IN_TILE_WIDTH1);
-            for (int t = 0; t < T; t++) {
+            
+            for (int t = 0; t < T; t++)
+            {
                 if (tx + t*MUL_IN_TILE_WIDTH1 < filter_area * C) {
                     tileK[ty][tx] = k[row*filter_area*C + (tx + t*MUL_IN_TILE_WIDTH1)];
                 } else {
@@ -107,7 +109,7 @@ namespace mxnet
 
             const int b = blockIdx.z;
 
-            float acc = 0;
+            half2 acc = __float2half2_rn(0.0);
 
             const int tx = threadIdx.x;
             const int ty = threadIdx.y;
@@ -134,14 +136,16 @@ namespace mxnet
                 }
                 __syncthreads();
                 #pragma unroll
-                for (int ti = 0; ti < MUL_IN_TILE_WIDTH2; ti++) {
-                    acc += tileK[ty][ti] * tileX[ti][tx];
+                for (int ti = 0; ti < MUL_IN_TILE_WIDTH2 / 2; ++ti) {
+                    acc = __hfma2(__floats2half2_rn(tileK[ty][ti * 2], tileK[ty][(ti * 2) + 1]), 
+                        __floats2half2_rn(tileX[ti * 2][tx], tileX[(ti * 2) +1][tx]), 
+                        acc);
                 }
                 __syncthreads();
             }
 
             if (col < out_area) {
-                y4d(b, row, 0, col) = acc;
+                y4d(b, row, 0, col) = __high2float(acc) + __low2float(acc);
             }
             
             #undef y4d
