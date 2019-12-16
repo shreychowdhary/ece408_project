@@ -27,9 +27,9 @@ namespace mxnet
                                                const int M, const int C, const int H, const int W, const int K,
                                                const int H_out, const int W_out)
 		{
-#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-#define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+            #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
+            #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+            #define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
             __shared__ float tileK[MUL_IN_TILE_HEIGHT1][MUL_IN_TILE_WIDTH1];
             __shared__ float tileX[MUL_IN_TILE_WIDTH1][MUL_IN_TILE_WIDTH1];
@@ -42,7 +42,7 @@ namespace mxnet
 
             const int b = blockIdx.z;
 
-            float acc = 0;
+            half2 acc = __float2half2_rn(0.0);
 
             const int tx = threadIdx.x;
             const int ty = threadIdx.y;
@@ -72,27 +72,29 @@ namespace mxnet
                 
                 __syncthreads();
                 #pragma unroll
-                for (int ti = 0; ti < MUL_IN_TILE_WIDTH1; ti++) {
-                    acc += tileK[ty][ti] * tileX[ti][tx];
+                for (int ti = 0; ti < MUL_IN_TILE_WIDTH1 / 2; ++ti) {
+                    acc = __hfma2(__floats2half2_rn(tileK[ty][ti * 2], tileK[ty][(ti * 2) + 1]), 
+                        __floats2half2_rn(tileX[ti * 2][tx], tileX[(ti * 2) +1][tx]), 
+                        acc);
                 }
                 __syncthreads();
             }
 
             if (col < out_area) {
-                y4d(b, row, 0, col) = acc;
+                y4d(b, row, 0, col) = __high2float(acc) + __low2float(acc);
             }
            
-#undef y4d
-#undef x4d
-#undef k4d
+            #undef y4d
+            #undef x4d
+            #undef k4d
 		}
         __global__ void mul_forward_kernel_two(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, 
                                                const int M, const int C, const int H, const int W, const int K,
                                                const int H_out, const int W_out)
 		{
-#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-#define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+            #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
+            #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+            #define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
             __shared__ float tileK[MUL_IN_TILE_HEIGHT2][MUL_IN_TILE_WIDTH2];
             __shared__ float tileX[MUL_IN_TILE_WIDTH2][MUL_IN_TILE_WIDTH2];
@@ -112,7 +114,9 @@ namespace mxnet
             const int filter_area = K * K;
             const int out_area = H_out * W_out;
             int T = ceil(1.0 * C * K * K / MUL_IN_TILE_WIDTH2);
-            for (int t = 0; t < T; t++) {
+
+            for (int t = 0; t < T; t++)
+            {
                 if (tx + t*MUL_IN_TILE_WIDTH2 < filter_area * C) {
                     tileK[ty][tx] = k[row*filter_area*C + (tx + t*MUL_IN_TILE_WIDTH2)];
                 } else {
@@ -140,9 +144,9 @@ namespace mxnet
                 y4d(b, row, 0, col) = acc;
             }
             
-#undef y4d
-#undef x4d
-#undef k4d
+            #undef y4d
+            #undef x4d
+            #undef k4d
 		}
 
 		/* 
