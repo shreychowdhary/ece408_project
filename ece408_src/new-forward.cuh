@@ -10,12 +10,10 @@ namespace mxnet
 
 		#define ONE_IN_TILE_WIDTH 32
 		#define ONE_OUT_TILE_WIDTH 28
-		// #define MUL_IN_TILE_WIDTH 32
-		// #define MUL_OUT_TILE_WIDTH 28
-		#define MUL_IN_TILE_WIDTH1 32
-		#define MUL_IN_TILE_HEIGHT1 6
-		#define MUL_IN_TILE_WIDTH2 32
-		#define MUL_IN_TILE_HEIGHT2 16
+		#define MUL_IN_TILE_WIDTH1 16
+		#define MUL_IN_TILE_HEIGHT1 12
+		#define MUL_IN_TILE_WIDTH2 16
+		#define MUL_IN_TILE_HEIGHT2 24
         
 
 		#define MAX_M_SIZE 24
@@ -26,16 +24,18 @@ namespace mxnet
 		__constant__ float convo_kernel[MAX_M_SIZE * MAX_C_SIZE * MAX_K_SIZE * MAX_K_SIZE];
 
 		// use when C = 1
-		__global__ void mul_forward_kernel_one(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, 
-									const int M, const int C, const int H, const int W, const int K, const int H_out, const int W_out)
+
+
+        __global__ void mul_forward_kernel_one(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, 
+                                               const int M, const int C, const int H, const int W, const int K,
+                                               const int H_out, const int W_out)
 		{
-			#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-			#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-			#define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
+#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+#define k4d(i3, i2, i1, i0) convo_kernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
             __shared__ float tileK[MUL_IN_TILE_HEIGHT1][MUL_IN_TILE_WIDTH1];
             __shared__ float tileX[MUL_IN_TILE_WIDTH1][MUL_IN_TILE_WIDTH1];
-
 
             const int row = blockIdx.y * blockDim.y + threadIdx.y;
             const int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -43,7 +43,7 @@ namespace mxnet
             const int h_in = col / H_out;
             const int w_in = col % H_out;
 
-            const int b = /* batch? */ blockIdx.z;
+            const int b = blockIdx.z;
 
             float acc = 0;
 
@@ -51,43 +51,44 @@ namespace mxnet
             const int ty = threadIdx.y;
             const int filter_area = K * K;
             const int out_area = H_out * W_out;
-            
-            if (tx < filter_area) {
-                // tileK[ty][tx] = k[row*filter_area + tx];
-                tileK[ty][tx] = convo_kernel[row*filter_area + tx];              
-            } else {
-                tileK[ty][tx] = 0;
-            }
+            int T = ceil(1.0 * C * K * K / MUL_IN_TILE_WIDTH1);
+            for (int t = 0; t < T; t++) {
+                if (tx + t*MUL_IN_TILE_WIDTH1 < filter_area * C) {
+                    tileK[ty][tx] = convo_kernel[row*filter_area*C + (tx + t*MUL_IN_TILE_WIDTH1)];
+                } else {
+                    tileK[ty][tx] = 0;
+                }
 
-            // unrolled x tile
-#pragma unroll
-            for (int r = 0; r < (MUL_IN_TILE_WIDTH1 / MUL_IN_TILE_HEIGHT1); r++) {
-                int rx = r * MUL_IN_TILE_HEIGHT1 + ty;
-                if (rx < MUL_IN_TILE_WIDTH1) {
-                    int k_lin = rx % filter_area;
-                    if (rx < filter_area && col < out_area) {
-                        tileX[rx][tx] = x4d(b, rx / filter_area, h_in + k_lin/K, w_in + k_lin%K);
-                    } else {
-                        tileX[rx][tx] = 0;
+                // unrolled x tile
+                #pragma unroll
+                for (int i = 0; i < ceil(1.0 * MUL_IN_TILE_WIDTH1 / MUL_IN_TILE_HEIGHT1); i++) {
+                    if (ty + i * MUL_IN_TILE_HEIGHT1 < MUL_IN_TILE_WIDTH1) {
+                        int rx = t * MUL_IN_TILE_WIDTH1 + i * MUL_IN_TILE_HEIGHT1 + ty;
+                        int k_lin = rx % filter_area;
+                        if (rx < filter_area*C && col < out_area) {
+                            tileX[ty + i * MUL_IN_TILE_HEIGHT1][tx] = x4d(b, rx / filter_area, h_in + k_lin/K, w_in + k_lin%K);
+                        } else {
+                            tileX[ty + i * MUL_IN_TILE_HEIGHT1][tx] = 0;
+                        }
                     }
                 }
-            }
-            __syncthreads();
-
-            #pragma unroll
-            for (int ti = 0; ti < MUL_IN_TILE_WIDTH1; ti++) {
-                acc += tileK[ty][ti] * tileX[ti][tx];
+                
+                __syncthreads();
+                #pragma unroll
+                for (int ti = 0; ti < MUL_IN_TILE_WIDTH1; ti++) {
+                    acc += tileK[ty][ti] * tileX[ti][tx];
+                }
+                __syncthreads();
             }
 
             if (col < out_area) {
                 y4d(b, row, 0, col) = acc;
             }
-            
-			#undef y4d
-			#undef x4d
-			#undef k4d
+           
+#undef y4d
+#undef x4d
+#undef k4d
 		}
-
         __global__ void mul_forward_kernel_two(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, 
                                                const int M, const int C, const int H, const int W, const int K,
                                                const int H_out, const int W_out)
@@ -99,14 +100,13 @@ namespace mxnet
             __shared__ float tileK[MUL_IN_TILE_HEIGHT2][MUL_IN_TILE_WIDTH2];
             __shared__ float tileX[MUL_IN_TILE_WIDTH2][MUL_IN_TILE_WIDTH2];
 
-
             const int row = blockIdx.y * blockDim.y + threadIdx.y;
             const int col = blockIdx.x * blockDim.x + threadIdx.x;
 
             const int h_in = col / H_out;
             const int w_in = col % H_out;
 
-            const int b = /* batch? */ blockIdx.z;
+            const int b = blockIdx.z;
 
             float acc = 0;
 
@@ -114,34 +114,30 @@ namespace mxnet
             const int ty = threadIdx.y;
             const int filter_area = K * K;
             const int out_area = H_out * W_out;
-
-            for (int t = 0; t < C; t++) {
+            int T = ceil(1.0 * C * K * K / MUL_IN_TILE_WIDTH2);
+            for (int t = 0; t < T; t++) {
                 if (tx + t*MUL_IN_TILE_WIDTH2 < filter_area * C) {
                     tileK[ty][tx] = convo_kernel[row*filter_area*C + (tx + t*MUL_IN_TILE_WIDTH2)];
                 } else {
                     tileK[ty][tx] = 0;
                 }
 
-                // unrolled x tile
-#pragma unroll
-                for (int r = 0; r < (MUL_IN_TILE_WIDTH2 / MUL_IN_TILE_HEIGHT2); r++) {
-                    int rx = t * MUL_IN_TILE_WIDTH2 + r * MUL_IN_TILE_HEIGHT2 + ty;
+                if (ty < MUL_IN_TILE_WIDTH2) {
+                    int rx = t * MUL_IN_TILE_WIDTH2 + ty;
                     int k_lin = rx % filter_area;
                     if (rx < filter_area*C && col < out_area) {
-                        tileX[r * MUL_IN_TILE_HEIGHT2 + ty][tx] = x4d(b, rx / filter_area, h_in + k_lin/K, w_in + k_lin%K);
+                        tileX[ty][tx] = x4d(b, rx / filter_area, h_in + k_lin/K, w_in + k_lin%K);
                     } else {
-                        tileX[r * MUL_IN_TILE_HEIGHT2 + ty][tx] = 0;
+                        tileX[ty][tx] = 0;
                     }
                 }
-
+                __syncthreads();
                 #pragma unroll
                 for (int ti = 0; ti < MUL_IN_TILE_WIDTH2; ti++) {
                     acc += tileK[ty][ti] * tileX[ti][tx];
                 }
                 __syncthreads();
             }
-
-
 
             if (col < out_area) {
                 y4d(b, row, 0, col) = acc;
