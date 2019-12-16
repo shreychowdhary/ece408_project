@@ -22,7 +22,7 @@ commands:
       #- nvprof --kernels "::forward:1" --analysis-metrics -o forward1_analysis.nvprof python m3.1.py
       #- nvprof --kernels "::forward:2" --analysis-metrics -o forward2_analysis.nvprof python m3.1.py
       #- python m4.1.py
-      #- nvprof -o split_timeline.nvprof python final.py # execute code
-      #- nvprof --kernels "one_forward_kernel" --analysis-metrics -o split_forward1_analysis.nvprof python final.py
-      #- nvprof --kernels "mul_forward_kernel" --analysis-metrics -o split_forward2_analysis.nvprof python final.py
+    - nvprof -o split_timeline.nvprof python final.py # execute code
+    - nvprof --kernels "one_forward_kernel" --analysis-metrics -o split_forward1_analysis.nvprof python final.py
+    - nvprof --kernels "mul_forward_kernel" --analysis-metrics -o split_forward2_analysis.nvprof python final.py
     - python final.py
