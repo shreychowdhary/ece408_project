@@ -42,7 +42,7 @@ namespace mxnet
 
             const int b = blockIdx.z;
 
-            half2 acc = __float2half2_rn(0.0);
+            float acc = 0;
 
             const int tx = threadIdx.x;
             const int ty = threadIdx.y;
@@ -83,7 +83,7 @@ namespace mxnet
             }
 
             if (col < out_area) {
-                y4d(b, row, 0, col) = __high2float(acc) + __low2float(acc);
+                y4d(b, row, 0, col) = acc;
             }
            
             #undef y4d
@@ -109,8 +109,8 @@ namespace mxnet
 
             const int b = blockIdx.z;
 
-            half2 acc = __float2half2_rn(0.0);
-
+            float acc = 0.0;
+            
             const int tx = threadIdx.x;
             const int ty = threadIdx.y;
             const int filter_area = K * K;
@@ -144,7 +144,7 @@ namespace mxnet
             }
 
             if (col < out_area) {
-                y4d(b, row, 0, col) = __high2float(acc) + __low2float(acc);
+                y4d(b, row, 0, col) = acc;
             }
             
             #undef y4d
